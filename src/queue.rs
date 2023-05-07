@@ -7,7 +7,8 @@ use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::mpsc;
 
-use crate::{try_os_status, CAError, Sample, StreamFormat};
+use crate::format::{Sample, StreamFormat};
+use crate::{try_os_status, CAError};
 
 pub struct AudioQueueOutput<S: Sample> {
     queue_ref: sys::AudioQueueRef,
@@ -359,8 +360,7 @@ unsafe extern "C" fn input_proc(
 mod test {
     use std::f32::consts::PI;
 
-    use crate::format::LinearPcmFlags;
-    use crate::SampleFormat;
+    use crate::format::{LinearPcmFlags, SampleFormat};
 
     use super::*;
 

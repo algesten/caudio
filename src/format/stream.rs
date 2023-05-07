@@ -4,7 +4,9 @@ use sys::AudioStreamBasicDescription;
 
 use crate::error::AudioUnitError;
 use crate::format::{AudioFormat, LinearPcmFlags};
-use crate::{CAError, SampleFormat};
+use crate::CAError;
+
+use super::SampleFormat;
 
 //
 pub struct StreamFormat {
