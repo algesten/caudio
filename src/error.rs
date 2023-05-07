@@ -11,8 +11,33 @@ pub enum CAError {
     AudioFormatError(#[from] AudioFormatError),
     #[error("audio unit error: {0}")]
     AudioUnitError(#[from] AudioUnitError),
+    #[error("unknown OSStatus: {0}")]
+    UnknownOSStatus(OSStatus),
     #[error("other: {0}")]
     Other(String),
+}
+
+impl CAError {
+    pub fn from_os_status(status: OSStatus) -> Result<(), Self> {
+        if status == 0 {
+            return Ok(());
+        }
+
+        if let Some(e) = AudioError::from_os_status(status) {
+            return Err(e.into());
+        };
+        if let Some(e) = AudioCodecError::from_os_status(status) {
+            return Err(e.into());
+        };
+        if let Some(e) = AudioFormatError::from_os_status(status) {
+            return Err(e.into());
+        };
+        if let Some(e) = AudioUnitError::from_os_status(status) {
+            return Err(e.into());
+        };
+
+        return Err(CAError::UnknownOSStatus(status));
+    }
 }
 
 impl<S: Into<String>> From<S> for CAError {

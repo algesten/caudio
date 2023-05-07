@@ -1,10 +1,14 @@
+use std::ops::Deref;
+
+use sys::AudioStreamBasicDescription;
+
 use crate::error::AudioUnitError;
 use crate::format::{AudioFormat, LinearPcmFlags};
 use crate::{CAError, SampleFormat};
 
 //
 pub struct StreamFormat {
-    pub(crate) asbd: sys::AudioStreamBasicDescription,
+    asbd: sys::AudioStreamBasicDescription,
 }
 
 impl StreamFormat {
@@ -93,5 +97,13 @@ impl TryFrom<sys::AudioStreamBasicDescription> for StreamFormat {
         }
 
         Ok(Self { asbd })
+    }
+}
+
+impl Deref for StreamFormat {
+    type Target = AudioStreamBasicDescription;
+
+    fn deref(&self) -> &Self::Target {
+        &self.asbd
     }
 }
