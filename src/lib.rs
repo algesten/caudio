@@ -5,6 +5,8 @@ pub mod format;
 
 pub mod queue;
 
+pub mod unit;
+
 macro_rules! try_os_status {
     ($expr:expr) => {
         CAError::from_os_status($expr)?

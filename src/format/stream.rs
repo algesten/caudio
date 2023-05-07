@@ -8,7 +8,7 @@ use crate::CAError;
 
 use super::SampleFormat;
 
-//
+/// Wrapper around an AudioStreamBasicDescription.
 pub struct StreamFormat {
     asbd: sys::AudioStreamBasicDescription,
 }
