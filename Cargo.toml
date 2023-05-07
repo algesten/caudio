@@ -1,0 +1,13 @@
+[package]
+name = "caudio"
+version = "0.1.0"
+edition = "2021"
+keywords = ["core", "audio", "unit", "osx", "ios"]
+readme = "README.md"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/RustAudio/coreaudio-rs.git"
+homepage = "https://github.com/RustAudio/coreaudio-rs"
+
+[dependencies]
+sys = { package = "coreaudio-sys", version = "0.2.12", features = ["audio_unit", "core_audio"] }
+thiserror = "1.0.40"
