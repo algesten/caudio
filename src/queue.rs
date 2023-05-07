@@ -1,3 +1,5 @@
+//! AudioQueue for hardware input/output.
+
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem;
