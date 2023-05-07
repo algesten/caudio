@@ -1,6 +1,9 @@
 use std::ffi::CStr;
+use std::mem;
 use std::ops::Deref;
 use std::ptr;
+
+use core_foundation_sys::string::CFStringGetCString;
 
 use crate::{try_os_status, CAError};
 
@@ -76,7 +79,13 @@ unsafe fn cfstring_ref_to_string(r: sys::CFStringRef) -> String {
     let len = sys::CFStringGetLength(r) + 1;
     let mut bytes = vec![0_i8; len as usize];
 
-    sys::CFStringGetCString(r, bytes.as_mut_ptr(), len, sys::kCFStringEncodingUTF8);
+    CFStringGetCString(
+        // sys::CFStringRef and core_foundation_sys should link to the same type.
+        mem::transmute(r),
+        bytes.as_mut_ptr(),
+        len as isize,
+        sys::kCFStringEncodingUTF8,
+    );
 
     let c_str = CStr::from_ptr(bytes.as_ptr());
     c_str.to_str().unwrap().to_owned()
