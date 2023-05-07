@@ -9,5 +9,6 @@ repository = "https://github.com/RustAudio/coreaudio-rs.git"
 homepage = "https://github.com/RustAudio/coreaudio-rs"
 
 [dependencies]
+bitflags = "2.2.1"
 sys = { package = "coreaudio-sys", version = "0.2.12", features = ["audio_unit", "core_audio"] }
 thiserror = "1.0.40"
