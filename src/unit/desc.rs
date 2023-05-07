@@ -7,11 +7,20 @@ use crate::{try_os_status, CAError};
 use super::Type;
 
 /// Wrapper around an AudioComponentDescription.
+#[derive(Debug, Clone)]
 pub struct Description {
     name: String,
     version: Version,
     desc: sys::AudioComponentDescription,
 }
+
+impl PartialEq for Description {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.version == other.version
+    }
+}
+
+impl Eq for Description {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
@@ -29,7 +38,7 @@ impl Description {
         let mut component = ptr::null_mut();
         component = unsafe { sys::AudioComponentFindNext(component, &search) };
         if component.is_null() {
-            return Err(CAError::NoMatchingComponentFound(ty));
+            return Err(CAError::NoDescriptionFound(ty));
         }
 
         Ok(component.try_into()?)
@@ -129,5 +138,19 @@ impl Deref for Description {
 
     fn deref(&self) -> &Self::Target {
         &self.desc
+    }
+}
+
+impl TryFrom<&Description> for sys::AudioComponent {
+    type Error = CAError;
+
+    fn try_from(value: &Description) -> Result<Self, Self::Error> {
+        let mut component = ptr::null_mut();
+        component = unsafe { sys::AudioComponentFindNext(component, &**value) };
+        if component.is_null() {
+            return Err(CAError::NoComponentFound(value.clone()));
+        }
+
+        Ok(component)
     }
 }

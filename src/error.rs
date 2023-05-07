@@ -1,7 +1,7 @@
 use sys::OSStatus;
 use thiserror::Error;
 
-use crate::unit::Type;
+use crate::unit::{Description, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum CAError {
@@ -13,8 +13,10 @@ pub enum CAError {
     AudioFormatError(#[from] AudioFormatError),
     #[error("audio unit error: {0}")]
     AudioUnitError(#[from] AudioUnitError),
-    #[error("no component found for: {0}")]
-    NoMatchingComponentFound(Type),
+    #[error("no description found for type: {0}")]
+    NoDescriptionFound(Type),
+    #[error("no component for description: {0:?}")]
+    NoComponentFound(Description),
     #[error("unknown OSStatus: {0}")]
     UnknownOSStatus(OSStatus),
     #[error("other: {0}")]
