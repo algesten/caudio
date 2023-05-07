@@ -10,6 +10,9 @@ pub use types::Type;
 mod buffer;
 pub use buffer::AudioBuffers;
 
+mod flags;
+pub use flags::ActionFlags;
+
 use crate::format::Sample;
 use crate::{try_os_status, CAError};
 
