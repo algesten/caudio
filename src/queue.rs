@@ -178,8 +178,8 @@ impl<S: Sample> AudioQueueInput<S> {
                 &**format,
                 Some(input_proc),
                 wrapper_ptr as *mut c_void,
-                sys::CFRunLoopGetCurrent(),
-                sys::kCFRunLoopCommonModes,
+                ptr::null_mut(),
+                ptr::null_mut(),
                 0,
                 &mut queue_ref,
             ));
@@ -375,8 +375,6 @@ mod test {
         .unwrap();
 
         q.start().unwrap();
-
-        unsafe { sys::CFRunLoopRun() };
 
         // std::thread::sleep(std::time::Duration::from_secs(10));
     }

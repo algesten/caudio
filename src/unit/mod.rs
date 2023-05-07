@@ -7,6 +7,9 @@ pub use desc::{Description, Version};
 pub mod types;
 pub use types::Type;
 
+mod buffer;
+pub use buffer::AudioBuffers;
+
 use crate::format::Sample;
 use crate::{try_os_status, CAError};
 
