@@ -3,14 +3,11 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
-use std::ptr;
-
-use sys::AudioBufferList;
 
 use crate::format::Sample;
 
 /// Wrapper around AudioBufferList.
-pub struct AudioBuffers<S: Sample> {
+pub struct AudioBufferList<S: Sample> {
     // When we create an owned list, the actual struct is in the _audio_buffer_list field
     // below. This is because the C-struct looks like this:
     // struct AudioBufferList
@@ -30,7 +27,7 @@ pub struct AudioBuffers<S: Sample> {
     _all_data: Box<[S]>,
 }
 
-impl<S: Sample> AudioBuffers<S> {
+impl<S: Sample> AudioBufferList<S> {
     /// Creates a new owned audio buffer.
     ///
     /// * `buffers` is how many buffers we want. For non-interleaved stereo data, we
@@ -61,7 +58,7 @@ impl<S: Sample> AudioBuffers<S> {
         let mut audio_buffer_list =
             vec![0_u8; list_byte_size + buffer_array_size].into_boxed_slice();
 
-        let list = &mut *audio_buffer_list as *mut _ as *mut AudioBufferList;
+        let list = &mut *audio_buffer_list as *mut _ as *mut sys::AudioBufferList;
         let to_fill = unsafe {
             (*list).mNumberBuffers = buffers as u32;
             let ptr = &mut (*list).mBuffers as *mut _ as *mut sys::AudioBuffer;
@@ -92,6 +89,8 @@ impl<S: Sample> AudioBuffers<S> {
             _all_data: all_data,
         }
     }
+
+    // Use a borrowed buffer as provided by core audio in render callbacks etc.
     pub(crate) fn borrow(list: *mut sys::AudioBufferList) -> Self {
         Self {
             list,
@@ -106,16 +105,25 @@ impl<S: Sample> AudioBuffers<S> {
         self.list
     }
 
-    pub fn buffers(&self) -> usize {
-        self.len()
+    /// Slice of contained buffers.
+    ///
+    /// Same as using the Deref trait.
+    pub fn buffers(&self) -> &[AudioBuffer<S>] {
+        &*self
+    }
+
+    /// Slice of mutable contained buffers.
+    ///
+    /// Same as using the DerefMut trait.
+    pub fn buffers_mut(&mut self) -> &mut [AudioBuffer<S>] {
+        &mut *self
     }
 
     pub fn channels(&self) -> usize {
         if self.is_empty() {
             0
         } else {
-            let first = &self[0];
-            first.mNumberChannels as usize
+            self[0].mNumberChannels as usize
         }
     }
 
@@ -129,53 +137,47 @@ impl<S: Sample> AudioBuffers<S> {
     }
 }
 
-impl<S: Sample> Drop for AudioBuffers<S> {
-    fn drop(&mut self) {
-        self.list = ptr::null_mut();
-    }
-}
-
 /// Overlay type over the actual sys::AudioBuffer type.
 ///
 /// This helps us to implement Deref.
 #[repr(C)]
 #[derive(Copy, Clone)]
 #[allow(non_snake_case)]
-pub struct DerefAudioBuffer<S: Sample> {
+pub struct AudioBuffer<S: Sample> {
     mNumberChannels: u32,
     mDataByteSize: u32,
     mData: *mut c_void,
-    _ph: PhantomData<S>,
+    _ph: PhantomData<S>, // zero sized
 }
 
-impl<S: Sample> Deref for AudioBuffers<S> {
-    type Target = [DerefAudioBuffer<S>];
+impl<S: Sample> Deref for AudioBufferList<S> {
+    type Target = [AudioBuffer<S>];
 
     fn deref(&self) -> &Self::Target {
         unsafe {
             let len = (*self.list).mNumberBuffers as usize;
-            let ptr = &(*self.list).mBuffers as *const _ as *const DerefAudioBuffer<S>;
+            let ptr = &(*self.list).mBuffers as *const _ as *const AudioBuffer<S>;
             std::slice::from_raw_parts(ptr, len)
         }
     }
 }
 
-impl<S: Sample> DerefMut for AudioBuffers<S> {
+impl<S: Sample> DerefMut for AudioBufferList<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             let len = (*self.list).mNumberBuffers as usize;
-            let ptr = &mut (*self.list).mBuffers as *mut _ as *mut DerefAudioBuffer<S>;
+            let ptr = &mut (*self.list).mBuffers as *mut _ as *mut AudioBuffer<S>;
             std::slice::from_raw_parts_mut(ptr, len)
         }
     }
 }
 
-impl<S: Sample> Deref for DerefAudioBuffer<S> {
+impl<S: Sample> Deref for AudioBuffer<S> {
     type Target = [S];
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            let DerefAudioBuffer {
+            let AudioBuffer {
                 mDataByteSize,
                 mData,
                 ..
@@ -188,10 +190,10 @@ impl<S: Sample> Deref for DerefAudioBuffer<S> {
     }
 }
 
-impl<S: Sample> DerefMut for DerefAudioBuffer<S> {
+impl<S: Sample> DerefMut for AudioBuffer<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            let DerefAudioBuffer {
+            let AudioBuffer {
                 mDataByteSize,
                 mData,
                 ..
@@ -204,19 +206,21 @@ impl<S: Sample> DerefMut for DerefAudioBuffer<S> {
     }
 }
 
-impl<S: Sample> fmt::Debug for AudioBuffers<S> {
+impl<S: Sample> fmt::Debug for AudioBufferList<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let buffers: &[DerefAudioBuffer<S>] = &self;
+        let buffers: &[AudioBuffer<S>] = &self;
         f.debug_struct("AudioBuffers")
             .field("buffers", &buffers)
             .finish()
     }
 }
 
-impl<S: Sample> fmt::Debug for DerefAudioBuffer<S> {
+impl<S: Sample> fmt::Debug for AudioBuffer<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let samples: &[S] = &self;
-        f.debug_struct("Buffer").field("samples", &samples).finish()
+        f.debug_struct("AudioBuffer")
+            .field("samples", &samples)
+            .finish()
     }
 }
 
@@ -226,24 +230,23 @@ mod test {
 
     #[test]
     fn owned_non_interleaved() {
-        let b = AudioBuffers::<f32>::new(2, 1, 512);
+        let b = AudioBufferList::<f32>::new(2, 1, 512);
         assert_eq!(b.len(), 2);
-        assert_eq!(b.buffers(), 2);
         assert_eq!(b.channels(), 1);
         assert_eq!(b.frames(), 512);
     }
 
     #[test]
     fn owned_interleaved() {
-        let b = AudioBuffers::<f32>::new(1, 2, 512);
-        assert_eq!(b.buffers(), 1);
+        let b = AudioBufferList::<f32>::new(1, 2, 512);
+        assert_eq!(b.len(), 1);
         assert_eq!(b.channels(), 2);
         assert_eq!(b.frames(), 512);
     }
 
     #[test]
     fn debug_print() {
-        let b = AudioBuffers::<f32>::new(1, 2, 512);
-        println!("{:?}", &*b);
+        let b = AudioBufferList::<f32>::new(1, 2, 512);
+        println!("{:?}", b);
     }
 }

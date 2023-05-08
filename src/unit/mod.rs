@@ -10,7 +10,7 @@ pub mod types;
 pub use types::Type;
 
 mod buffer;
-pub use buffer::AudioBuffers;
+pub use buffer::AudioBufferList;
 
 mod flags;
 pub use flags::ActionFlags;
@@ -149,7 +149,7 @@ impl<S: Sample> AudioUnit<S> {
     pub fn render(
         &mut self,
         time: &sys::AudioTimeStamp,
-        output: &mut AudioBuffers<S>,
+        output: &mut AudioBufferList<S>,
     ) -> Result<(), CAError> {
         //
 
@@ -181,7 +181,7 @@ impl<S: Sample> AudioUnit<S> {
                                   in_number_frames: sys::UInt32,
                                   io_data: *mut sys::AudioBufferList|
               -> sys::OSStatus {
-            let mut buffers = AudioBuffers::<S>::borrow(io_data);
+            let mut buffers = AudioBufferList::<S>::borrow(io_data);
 
             unsafe {
                 callback.render(
@@ -278,13 +278,13 @@ pub trait RenderCallback<S: Sample> {
         time: sys::AudioTimeStamp,
         bus: u32,
         frames: usize,
-        buffers: &mut AudioBuffers<S>,
+        buffers: &mut AudioBufferList<S>,
     );
 }
 
 impl<
         S: Sample,
-        T: for<'a> FnMut(ActionFlags, sys::AudioTimeStamp, u32, usize, &'a mut AudioBuffers<S>),
+        T: for<'a> FnMut(ActionFlags, sys::AudioTimeStamp, u32, usize, &'a mut AudioBufferList<S>),
     > RenderCallback<S> for T
 {
     fn render(
@@ -293,7 +293,7 @@ impl<
         time: sys::AudioTimeStamp,
         bus: u32,
         frames: usize,
-        buffers: &mut AudioBuffers<S>,
+        buffers: &mut AudioBufferList<S>,
     ) {
         (self)(flags, time, bus, frames, buffers)
     }
@@ -369,7 +369,7 @@ mod test {
         u.set_stream_format(&format, Scope::Output).unwrap();
 
         u.set_render_callback(
-            move |_flags, _time, _bus, _frames, buffers: &mut AudioBuffers<f32>| {
+            move |_flags, _time, _bus, _frames, buffers: &mut AudioBufferList<f32>| {
                 for buf in &mut **buffers {
                     for sample in &mut **buf {
                         *sample = (angular_frequency * i as f32 * sample_period).sin();
@@ -386,7 +386,7 @@ mod test {
             ..Default::default()
         };
 
-        let mut output = AudioBuffers::<f32>::new(1, 2, 512);
+        let mut output = AudioBufferList::<f32>::new(1, 2, 512);
 
         for _ in 0..300 {
             u.render(&time, &mut output).unwrap();
