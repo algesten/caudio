@@ -370,13 +370,12 @@ mod test {
 
         u.set_render_callback(
             move |_flags, _time, _bus, _frames, buffers: &mut AudioBuffers<f32>| {
-
-                // for buf in &mut **buffers {
-                //     for sample in &mut **buf {
-                //         *sample = (angular_frequency * i as f32 * sample_period).sin();
-                //         i += 1;
-                //     }
-                // }
+                for buf in &mut **buffers {
+                    for sample in &mut **buf {
+                        *sample = (angular_frequency * i as f32 * sample_period).sin();
+                        i += 1;
+                    }
+                }
             },
         )
         .unwrap();
@@ -389,10 +388,9 @@ mod test {
 
         let mut output = AudioBuffers::<f32>::new(1, 2, 512);
 
-        // for _ in 0..300 {
-        u.render(&time, &mut output).unwrap();
-
-        // time.mSampleTime += output.frames() as f64;
+        for _ in 0..300 {
+            u.render(&time, &mut output).unwrap();
+            time.mSampleTime += output.frames() as f64;
+        }
     }
-    // }
 }

@@ -3,18 +3,30 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
+use std::ptr;
+
+use sys::AudioBufferList;
 
 use crate::format::Sample;
 
 /// Wrapper around AudioBufferList.
 pub struct AudioBuffers<S: Sample> {
-    // For owned buffers, this contains pointers into buffers and all_data. As long as those
-    // boxed slices are alive, the SysAudioBufferList should be valid.
-    // For borrowed data, list contains pointers into _some other place_, and
-    // is only valid for the lifetime 'a.
-    list: Box<SysAudioBufferList>,
-    free_on_drop: bool,
-    _buffers: Box<[sys::AudioBuffer]>,
+    // When we create an owned list, the actual struct is in the _audio_buffer_list field
+    // below. This is because the C-struct looks like this:
+    // struct AudioBufferList
+    // {
+    //     UInt32      mNumberBuffers;
+    //     AudioBuffer mBuffers[1]; // this is a variable length array of mNumberBuffers elements
+    // }
+    // I.e. we have a dynamically growing array as last field.
+    //
+    // When we have a borrowed list, we don't use the _audio_buffer_list at all.
+    list: *mut sys::AudioBufferList,
+
+    // Backing buffer for the list pointer when we have owned data.
+    _audio_buffer_list: Box<[u8]>,
+
+    // Backing buffer for all the audio buffers.
     _all_data: Box<[S]>,
 }
 
@@ -30,67 +42,68 @@ impl<S: Sample> AudioBuffers<S> {
     /// * `frames` is how many frames we have per buffer. The number of samples
     /// that can go in each buffer is `channels` * `frames`.
     pub fn new(buffers: usize, channels: usize, frames: usize) -> Self {
+        // Need at least one buffer to be valid.
+        assert!(buffers >= 1);
+
         let samples_per_buffer = channels * frames;
         let bytes_per_buffer = samples_per_buffer * mem::size_of::<S>();
         let samples_total = buffers * samples_per_buffer;
 
-        // Allocate all data we need in one chunk, we take pointer into it.
-        let mut all_data = vec![S::default(); samples_total].into_boxed_slice();
+        // Allocate space for the sys::AudioBufferList and all additional array
+        // elements we have after it. The struct has space for 1 audio buffer.
+        let list_byte_size = mem::size_of::<sys::AudioBufferList>();
+        let buffer_byte_size = mem::size_of::<sys::AudioBuffer>();
 
-        let mut bufs = Vec::with_capacity(buffers);
+        // -1 because there is space for one in the struct.
+        let buffer_array_size = (buffers - 1) * buffer_byte_size;
+
+        // We could use MaybeInit
+        let mut audio_buffer_list =
+            vec![0_u8; list_byte_size + buffer_array_size].into_boxed_slice();
+
+        let list = &mut *audio_buffer_list as *mut _ as *mut AudioBufferList;
+        let to_fill = unsafe {
+            (*list).mNumberBuffers = buffers as u32;
+            let ptr = &mut (*list).mBuffers as *mut _ as *mut sys::AudioBuffer;
+            std::slice::from_raw_parts_mut(ptr, buffers)
+        };
+
+        // Allocate all data we need in one chunk, we take pointers into it.
+        let mut all_data = vec![S::default(); samples_total].into_boxed_slice();
 
         {
             let mut left = &mut all_data[..];
-            for _ in 0..buffers {
+            for buffer in to_fill.iter_mut() {
                 // Chunk off the amount we need for this buffer.
                 let (data, _left) = left.split_at_mut(samples_per_buffer);
 
                 // Keep track of how much we have left.
                 left = _left;
 
-                let buf = sys::AudioBuffer {
-                    mNumberChannels: channels as u32,
-                    mDataByteSize: bytes_per_buffer as u32,
-                    mData: data as *mut [S] as *mut c_void,
-                };
-                bufs.push(buf);
+                buffer.mNumberChannels = channels as u32;
+                buffer.mDataByteSize = bytes_per_buffer as u32;
+                buffer.mData = data as *mut [S] as *mut c_void;
             }
         }
 
-        let mut bufs = bufs.into_boxed_slice();
-
-        let list = Box::new(SysAudioBufferList {
-            mNumberBuffers: bufs.len() as u32,
-            mBuffers: &mut *bufs as *mut _ as *mut sys::AudioBuffer,
-        });
-
         Self {
             list,
-            free_on_drop: true,
-            _buffers: bufs,
+            _audio_buffer_list: audio_buffer_list,
             _all_data: all_data,
         }
     }
     pub(crate) fn borrow(list: *mut sys::AudioBufferList) -> Self {
-        let list = unsafe {
-            SysAudioBufferList {
-                mNumberBuffers: (*list).mNumberBuffers,
-                mBuffers: &mut (*list).mBuffers as *mut sys::AudioBuffer,
-            }
-        };
-
         Self {
-            list: Box::new(list),
-            free_on_drop: false,
+            list,
             // Dummy values since list is borrowed from _some other place_ that manages
             // the deallocation.
-            _buffers: vec![].into_boxed_slice(),
+            _audio_buffer_list: vec![].into_boxed_slice(),
             _all_data: vec![].into_boxed_slice(),
         }
     }
 
     pub(crate) fn as_sys_list(&mut self) -> *mut sys::AudioBufferList {
-        &mut *self.list as *mut SysAudioBufferList as *mut sys::AudioBufferList
+        self.list
     }
 
     pub fn buffers(&self) -> usize {
@@ -116,14 +129,10 @@ impl<S: Sample> AudioBuffers<S> {
     }
 }
 
-// For some reason coreaudio-sys has a 1 field array for mBuffers and we want
-// to be more generic.
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-#[allow(non_snake_case)]
-pub(crate) struct SysAudioBufferList {
-    mNumberBuffers: u32,
-    mBuffers: *mut sys::AudioBuffer,
+impl<S: Sample> Drop for AudioBuffers<S> {
+    fn drop(&mut self) {
+        self.list = ptr::null_mut();
+    }
 }
 
 /// Overlay type over the actual sys::AudioBuffer type.
@@ -144,15 +153,9 @@ impl<S: Sample> Deref for AudioBuffers<S> {
 
     fn deref(&self) -> &Self::Target {
         unsafe {
-            let SysAudioBufferList {
-                mNumberBuffers,
-                mBuffers,
-            } = *self.list;
-
-            std::slice::from_raw_parts(
-                mBuffers as *mut DerefAudioBuffer<S>,
-                mNumberBuffers as usize,
-            )
+            let len = (*self.list).mNumberBuffers as usize;
+            let ptr = &(*self.list).mBuffers as *const _ as *const DerefAudioBuffer<S>;
+            std::slice::from_raw_parts(ptr, len)
         }
     }
 }
@@ -160,15 +163,9 @@ impl<S: Sample> Deref for AudioBuffers<S> {
 impl<S: Sample> DerefMut for AudioBuffers<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
-            let SysAudioBufferList {
-                mNumberBuffers,
-                mBuffers,
-            } = *self.list;
-
-            std::slice::from_raw_parts_mut(
-                mBuffers as *mut DerefAudioBuffer<S>,
-                mNumberBuffers as usize,
-            )
+            let len = (*self.list).mNumberBuffers as usize;
+            let ptr = &mut (*self.list).mBuffers as *mut _ as *mut DerefAudioBuffer<S>;
+            std::slice::from_raw_parts_mut(ptr, len)
         }
     }
 }
@@ -226,15 +223,6 @@ impl<S: Sample> fmt::Debug for DerefAudioBuffer<S> {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn owned_empty() {
-        let b = AudioBuffers::<f32>::new(0, 2, 5);
-        assert_eq!(b.len(), 0);
-        assert_eq!(b.buffers(), 0);
-        assert_eq!(b.channels(), 0);
-        assert_eq!(b.frames(), 0);
-    }
 
     #[test]
     fn owned_non_interleaved() {
