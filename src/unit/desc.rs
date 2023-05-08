@@ -1,6 +1,5 @@
 use std::ffi::CStr;
 use std::mem;
-use std::ops::Deref;
 use std::ptr;
 
 use core_foundation_sys::string::CFStringGetCString;
@@ -73,6 +72,10 @@ impl Description {
     pub fn version(&self) -> Version {
         self.version
     }
+
+    pub(crate) fn as_sys_desc(&self) -> &sys::AudioComponentDescription {
+        &self.desc
+    }
 }
 
 unsafe fn cfstring_ref_to_string(r: sys::CFStringRef) -> String {
@@ -142,20 +145,12 @@ impl TryFrom<sys::AudioComponent> for Description {
     }
 }
 
-impl Deref for Description {
-    type Target = sys::AudioComponentDescription;
-
-    fn deref(&self) -> &Self::Target {
-        &self.desc
-    }
-}
-
 impl TryFrom<&Description> for sys::AudioComponent {
     type Error = CAError;
 
     fn try_from(value: &Description) -> Result<Self, Self::Error> {
         let mut component = ptr::null_mut();
-        component = unsafe { sys::AudioComponentFindNext(component, &**value) };
+        component = unsafe { sys::AudioComponentFindNext(component, value.as_sys_desc()) };
         if component.is_null() {
             return Err(CAError::NoComponentFound(value.clone()));
         }

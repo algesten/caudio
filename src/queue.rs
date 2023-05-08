@@ -51,7 +51,7 @@ impl<S: Sample> AudioQueueOutput<S> {
 
         unsafe {
             try_os_status!(sys::AudioQueueNewOutput(
-                &**format,
+                format.as_sys_asbd(),
                 Some(output_proc),
                 wrapper_ptr as *mut c_void,
                 ptr::null_mut(),
@@ -175,7 +175,7 @@ impl<S: Sample> AudioQueueInput<S> {
 
         unsafe {
             try_os_status!(sys::AudioQueueNewInput(
-                &**format,
+                format.as_sys_asbd(),
                 Some(input_proc),
                 wrapper_ptr as *mut c_void,
                 ptr::null_mut(),
