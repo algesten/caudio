@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::format::LinearPcmFlags;
 
 /// Dynamic representation of audio data sample format.
@@ -81,7 +83,7 @@ impl SampleFormat {
 }
 
 /// Audio data sample types.
-pub trait Sample: Default + Clone {
+pub trait Sample: Default + Clone + Debug + 'static {
     /// Dynamic representation of audio data sample format.
     fn sample_format() -> SampleFormat;
 }

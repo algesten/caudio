@@ -15,7 +15,7 @@ pub use buffer::AudioBuffers;
 mod flags;
 pub use flags::ActionFlags;
 
-use crate::format::Sample;
+use crate::format::{Sample, StreamFormat};
 use crate::{try_os_status, CAError};
 
 pub struct AudioUnit<S: Sample> {
@@ -119,6 +119,55 @@ impl<S: Sample> AudioUnit<S> {
         Ok(())
     }
 
+    /// Return the current Stream Format for the AudioUnit.
+    pub fn stream_format(&self, scope: Scope) -> Result<StreamFormat, CAError> {
+        let id = sys::kAudioUnitProperty_StreamFormat;
+        let asbd: sys::AudioStreamBasicDescription =
+            self.get_property(id, scope, Element::Output)?;
+        asbd.try_into()
+    }
+
+    /// Return the current output Stream Format for the AudioUnit.
+    pub fn output_stream_format(&self) -> Result<StreamFormat, CAError> {
+        self.stream_format(Scope::Output)
+    }
+
+    /// Return the current input Stream Format for the AudioUnit.
+    pub fn input_stream_format(&self) -> Result<StreamFormat, CAError> {
+        self.stream_format(Scope::Input)
+    }
+
+    pub fn set_stream_format(
+        &mut self,
+        format: &StreamFormat,
+        scope: Scope,
+    ) -> Result<(), CAError> {
+        let id = sys::kAudioUnitProperty_StreamFormat;
+        self.set_property(id, scope, Element::Output, Some(&*format))
+    }
+
+    pub fn render(
+        &mut self,
+        time: &sys::AudioTimeStamp,
+        output: &mut AudioBuffers<S>,
+    ) -> Result<(), CAError> {
+        //
+
+        unsafe {
+            try_os_status!(sys::AudioUnitRender(
+                self.unit,
+                ptr::null_mut(),
+                time,
+                0,
+                512,
+                // output.frames() as u32,
+                output.as_sys_list(),
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn set_render_callback(
         &mut self,
         mut callback: impl RenderCallback<S> + 'static,
@@ -132,7 +181,8 @@ impl<S: Sample> AudioUnit<S> {
                                   in_number_frames: sys::UInt32,
                                   io_data: *mut sys::AudioBufferList|
               -> sys::OSStatus {
-            let mut buffers = AudioBuffers::<'_, S>::borrow(io_data);
+            let mut buffers = AudioBuffers::<S>::borrow(io_data);
+
             unsafe {
                 callback.render(
                     ActionFlags::from_bits_truncate(*io_action_flags),
@@ -193,6 +243,22 @@ impl<S: Sample> AudioUnit<S> {
 
         Ok(())
     }
+
+    pub fn get_property<T>(&self, id: u32, scope: Scope, elem: Element) -> Result<T, CAError> {
+        let scope = scope as u32;
+        let elem = elem as u32;
+        let mut size = mem::size_of::<T>() as u32;
+        unsafe {
+            let mut data_uninit = mem::MaybeUninit::<T>::uninit();
+            let data_ptr = data_uninit.as_mut_ptr() as *mut _ as *mut c_void;
+            let size_ptr = &mut size as *mut _;
+            try_os_status!(sys::AudioUnitGetProperty(
+                self.unit, id, scope, elem, data_ptr, size_ptr
+            ));
+            let data: T = data_uninit.assume_init();
+            Ok(data)
+        }
+    }
 }
 
 impl<S: Sample> Drop for AudioUnit<S> {
@@ -216,8 +282,10 @@ pub trait RenderCallback<S: Sample> {
     );
 }
 
-impl<S: Sample, T: FnMut(ActionFlags, sys::AudioTimeStamp, u32, usize, &mut AudioBuffers<S>)>
-    RenderCallback<S> for T
+impl<
+        S: Sample,
+        T: for<'a> FnMut(ActionFlags, sys::AudioTimeStamp, u32, usize, &'a mut AudioBuffers<S>),
+    > RenderCallback<S> for T
 {
     fn render(
         &mut self,
@@ -266,6 +334,10 @@ extern "C" fn input_proc(
 
 #[cfg(test)]
 mod test {
+    use std::f32::consts::PI;
+
+    use crate::format::{LinearPcmFlags, SampleFormat};
+
     use super::types::EffectType;
     use super::*;
 
@@ -275,4 +347,52 @@ mod test {
         let mut u = AudioUnit::<f32>::new(d).unwrap();
         u.initialize().unwrap();
     }
+
+    #[test]
+    fn render_delay_audio() {
+        let d = Description::first(EffectType::Delay).unwrap();
+        let mut u = AudioUnit::<f32>::new(d).unwrap();
+
+        let angular_frequency = 2.0 * PI * 440.0;
+        let sample_period = 1.0 / 48_000.0;
+        let mut i = 0;
+
+        let format = StreamFormat::new(
+            44100.0,
+            SampleFormat::F32,
+            LinearPcmFlags::IS_FLOAT
+                | LinearPcmFlags::IS_PACKED
+                | LinearPcmFlags::IS_NON_INTERLEAVED,
+            1,
+        );
+        u.set_stream_format(&format, Scope::Input).unwrap();
+        u.set_stream_format(&format, Scope::Output).unwrap();
+
+        u.set_render_callback(
+            move |_flags, _time, _bus, _frames, buffers: &mut AudioBuffers<f32>| {
+
+                // for buf in &mut **buffers {
+                //     for sample in &mut **buf {
+                //         *sample = (angular_frequency * i as f32 * sample_period).sin();
+                //         i += 1;
+                //     }
+                // }
+            },
+        )
+        .unwrap();
+
+        u.initialize().unwrap();
+
+        let mut time = sys::AudioTimeStamp {
+            ..Default::default()
+        };
+
+        let mut output = AudioBuffers::<f32>::new(1, 2, 512);
+
+        // for _ in 0..300 {
+        u.render(&time, &mut output).unwrap();
+
+        // time.mSampleTime += output.frames() as f64;
+    }
+    // }
 }

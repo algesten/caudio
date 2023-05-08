@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut};
@@ -6,19 +7,18 @@ use std::ops::{Deref, DerefMut};
 use crate::format::Sample;
 
 /// Wrapper around AudioBufferList.
-pub struct AudioBuffers<'a, S: Sample> {
-    // For 'static, list contains pointers into buffers and all_data. As long as those
+pub struct AudioBuffers<S: Sample> {
+    // For owned buffers, this contains pointers into buffers and all_data. As long as those
     // boxed slices are alive, the SysAudioBufferList should be valid.
-    // For 'a borrowed data, list contains pointers into _some other place_, and
+    // For borrowed data, list contains pointers into _some other place_, and
     // is only valid for the lifetime 'a.
-    pub(crate) list: *mut SysAudioBufferList,
+    list: Box<SysAudioBufferList>,
     free_on_drop: bool,
     _buffers: Box<[sys::AudioBuffer]>,
     _all_data: Box<[S]>,
-    _ph: &'a PhantomData<()>,
 }
 
-impl<S: Sample> AudioBuffers<'static, S> {
+impl<S: Sample> AudioBuffers<S> {
     /// Creates a new owned audio buffer.
     ///
     /// * `buffers` is how many buffers we want. For non-interleaved stereo data, we
@@ -51,7 +51,7 @@ impl<S: Sample> AudioBuffers<'static, S> {
                 let buf = sys::AudioBuffer {
                     mNumberChannels: channels as u32,
                     mDataByteSize: bytes_per_buffer as u32,
-                    mData: data.as_mut_ptr() as *mut c_void,
+                    mData: data as *mut [S] as *mut c_void,
                 };
                 bufs.push(buf);
             }
@@ -61,32 +61,36 @@ impl<S: Sample> AudioBuffers<'static, S> {
 
         let list = Box::new(SysAudioBufferList {
             mNumberBuffers: bufs.len() as u32,
-            mBuffers: bufs.as_mut_ptr(),
+            mBuffers: &mut *bufs as *mut _ as *mut sys::AudioBuffer,
         });
-
-        let list = Box::into_raw(list);
 
         Self {
             list,
             free_on_drop: true,
             _buffers: bufs,
             _all_data: all_data,
-            _ph: &PhantomData,
         }
     }
-}
-
-impl<'a, S: Sample> AudioBuffers<'a, S> {
     pub(crate) fn borrow(list: *mut sys::AudioBufferList) -> Self {
+        let list = unsafe {
+            SysAudioBufferList {
+                mNumberBuffers: (*list).mNumberBuffers,
+                mBuffers: &mut (*list).mBuffers as *mut sys::AudioBuffer,
+            }
+        };
+
         Self {
-            list: list as *mut SysAudioBufferList,
+            list: Box::new(list),
             free_on_drop: false,
             // Dummy values since list is borrowed from _some other place_ that manages
             // the deallocation.
             _buffers: vec![].into_boxed_slice(),
             _all_data: vec![].into_boxed_slice(),
-            _ph: &PhantomData,
         }
+    }
+
+    pub(crate) fn as_sys_list(&mut self) -> *mut sys::AudioBufferList {
+        &mut *self.list as *mut SysAudioBufferList as *mut sys::AudioBufferList
     }
 
     pub fn buffers(&self) -> usize {
@@ -112,16 +116,6 @@ impl<'a, S: Sample> AudioBuffers<'a, S> {
     }
 }
 
-impl<'a, S: Sample> Drop for AudioBuffers<'a, S> {
-    fn drop(&mut self) {
-        if self.free_on_drop {
-            // Bring back to dealloc The internal pointers are to buffers and all_data
-            // which will go by themselves.
-            unsafe { Box::from_raw(self.list) };
-        }
-    }
-}
-
 // For some reason coreaudio-sys has a 1 field array for mBuffers and we want
 // to be more generic.
 #[repr(C)]
@@ -136,7 +130,7 @@ pub(crate) struct SysAudioBufferList {
 ///
 /// This helps us to implement Deref.
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 #[allow(non_snake_case)]
 pub struct DerefAudioBuffer<S: Sample> {
     mNumberChannels: u32,
@@ -145,7 +139,7 @@ pub struct DerefAudioBuffer<S: Sample> {
     _ph: PhantomData<S>,
 }
 
-impl<'a, S: Sample> Deref for AudioBuffers<'a, S> {
+impl<S: Sample> Deref for AudioBuffers<S> {
     type Target = [DerefAudioBuffer<S>];
 
     fn deref(&self) -> &Self::Target {
@@ -163,7 +157,7 @@ impl<'a, S: Sample> Deref for AudioBuffers<'a, S> {
     }
 }
 
-impl<'a, S: Sample> DerefMut for AudioBuffers<'a, S> {
+impl<S: Sample> DerefMut for AudioBuffers<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             let SysAudioBufferList {
@@ -213,6 +207,22 @@ impl<S: Sample> DerefMut for DerefAudioBuffer<S> {
     }
 }
 
+impl<S: Sample> fmt::Debug for AudioBuffers<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let buffers: &[DerefAudioBuffer<S>] = &self;
+        f.debug_struct("AudioBuffers")
+            .field("buffers", &buffers)
+            .finish()
+    }
+}
+
+impl<S: Sample> fmt::Debug for DerefAudioBuffer<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let samples: &[S] = &self;
+        f.debug_struct("Buffer").field("samples", &samples).finish()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -241,5 +251,11 @@ mod test {
         assert_eq!(b.buffers(), 1);
         assert_eq!(b.channels(), 2);
         assert_eq!(b.frames(), 512);
+    }
+
+    #[test]
+    fn debug_print() {
+        let b = AudioBuffers::<f32>::new(1, 2, 512);
+        println!("{:?}", &*b);
     }
 }

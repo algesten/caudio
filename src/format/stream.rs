@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::Deref;
 
 use sys::AudioStreamBasicDescription;
@@ -107,5 +108,16 @@ impl Deref for StreamFormat {
 
     fn deref(&self) -> &Self::Target {
         &self.asbd
+    }
+}
+
+impl fmt::Debug for StreamFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamFormat")
+            .field("sample_rate", &self.sample_rate())
+            .field("sample_format", &self.sample_format())
+            .field("flags", &self.flags())
+            .field("channels", &self.channels())
+            .finish()
     }
 }
