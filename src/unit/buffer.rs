@@ -6,6 +6,34 @@ use std::ops::{Deref, DerefMut};
 
 use crate::format::Sample;
 
+// This is how we want the layout of the AudioBufferList with the DST AudioBuffer
+// and pointers to another memory segment with the actual audio data.
+//
+//     AudioBufferList                     Audio data
+//    ┌──────────────┐                 ┌▶┌──────────────┐
+//    │mNumberBuffers│               ┌─┘ │              │
+//    ├──────────────┤             ┌─┘   │              │
+//    ├ ─ ─ ─ ─ ─ ─ ─│           ┌─┘     │              │
+//    │   padding    │         ┌─┘       │              │
+//    ├ ─ ─ ─ ─ ─ ─ ─│       ┌─┘         │              │
+//    ╠══════════════╣     ┌─┘         ┌▶├ ─ ─ ─ ─ ─ ─ ─│
+//    ║  data_size   ║   ┌─┘         ┌─┘ │              │
+//    ╠ ─ ─ ─ ─ ─ ─ ─║ ┌─┘         ┌─┘   │              │
+//    ║     data     ║─┘         ┌─┘     │              │
+//    ╠══════════════╣         ┌─┘       │     data     │
+//    ╠══════════════╣       ┌─┘         │              │
+//    ║  data_size   ║     ┌─┘           │              │
+//    ╠ ─ ─ ─ ─ ─ ─ ─║  ┌──┘           ┌▶├ ─ ─ ─ ─ ─ ─ ─│
+//    ║     data     ║──┘           ┌──┘ │              │
+//    ╠══════════════╣           ┌──┘    │              │
+//    ╠══════════════╣        ┌──┘       │              │
+//    ║  data_size   ║     ┌──┘          │              │
+//    ╠ ─ ─ ─ ─ ─ ─ ─║  ┌──┘             │              │
+//    ║     data     ║──┘                │              │
+//    ╚══════════════╝                   └──────────────┘
+//
+//
+
 /// Wrapper around AudioBufferList.
 pub struct AudioBufferList<S: Sample> {
     // When we create an owned list, the actual struct is in the _audio_buffer_list field
@@ -24,7 +52,16 @@ pub struct AudioBufferList<S: Sample> {
     _audio_buffer_list: Box<[u8]>,
 
     // Backing buffer for all the audio buffers.
-    _all_data: Box<[S]>,
+    _audio_data: Box<[S]>,
+}
+
+/// Overlay type over the actual sys::AudioBuffer type.
+#[repr(C)]
+pub struct AudioBuffer<S: Sample> {
+    channels: u32,
+    data_byte_size: u32,
+    data: *mut c_void,
+    _ph: PhantomData<S>, // zero sized
 }
 
 impl<S: Sample> AudioBufferList<S> {
@@ -42,34 +79,33 @@ impl<S: Sample> AudioBufferList<S> {
         // Need at least one buffer to be valid.
         assert!(buffers >= 1);
 
-        let samples_per_buffer = channels * frames;
-        let bytes_per_buffer = samples_per_buffer * mem::size_of::<S>();
-        let samples_total = buffers * samples_per_buffer;
-
         // Allocate space for the sys::AudioBufferList and all additional array
         // elements we have after it. The struct has space for 1 audio buffer.
         let list_byte_size = mem::size_of::<sys::AudioBufferList>();
         let buffer_byte_size = mem::size_of::<sys::AudioBuffer>();
 
-        // -1 because there is space for one in the struct.
+        // -1 because there is space for one buffer in the struct.
         let buffer_array_size = (buffers - 1) * buffer_byte_size;
 
-        // We could use MaybeInit
         let mut audio_buffer_list =
             vec![0_u8; list_byte_size + buffer_array_size].into_boxed_slice();
 
         let list = &mut *audio_buffer_list as *mut _ as *mut sys::AudioBufferList;
         let to_fill = unsafe {
             (*list).mNumberBuffers = buffers as u32;
-            let ptr = &mut (*list).mBuffers as *mut _ as *mut sys::AudioBuffer;
+            let ptr = &mut (*list).mBuffers as *mut _ as *mut AudioBuffer<S>;
             std::slice::from_raw_parts_mut(ptr, buffers)
         };
 
+        let samples_per_buffer = channels * frames;
+        let samples_total = buffers * samples_per_buffer;
+        let bytes_per_buffer = samples_per_buffer * mem::size_of::<S>();
+
         // Allocate all data we need in one chunk, we take pointers into it.
-        let mut all_data = vec![S::default(); samples_total].into_boxed_slice();
+        let mut audio_data = vec![S::default(); samples_total].into_boxed_slice();
 
         {
-            let mut left = &mut all_data[..];
+            let mut left = &mut audio_data[..];
             for buffer in to_fill.iter_mut() {
                 // Chunk off the amount we need for this buffer.
                 let (data, _left) = left.split_at_mut(samples_per_buffer);
@@ -77,16 +113,16 @@ impl<S: Sample> AudioBufferList<S> {
                 // Keep track of how much we have left.
                 left = _left;
 
-                buffer.mNumberChannels = channels as u32;
-                buffer.mDataByteSize = bytes_per_buffer as u32;
-                buffer.mData = data as *mut [S] as *mut c_void;
+                buffer.channels = channels as u32;
+                buffer.data_byte_size = bytes_per_buffer as u32;
+                buffer.data = data as *mut [S] as *mut c_void;
             }
         }
 
         Self {
             list,
             _audio_buffer_list: audio_buffer_list,
-            _all_data: all_data,
+            _audio_data: audio_data,
         }
     }
 
@@ -97,7 +133,7 @@ impl<S: Sample> AudioBufferList<S> {
             // Dummy values since list is borrowed from _some other place_ that manages
             // the deallocation.
             _audio_buffer_list: vec![].into_boxed_slice(),
-            _all_data: vec![].into_boxed_slice(),
+            _audio_data: vec![].into_boxed_slice(),
         }
     }
 
@@ -118,36 +154,32 @@ impl<S: Sample> AudioBufferList<S> {
     pub fn buffers_mut(&mut self) -> &mut [AudioBuffer<S>] {
         &mut *self
     }
-
-    pub fn channels(&self) -> usize {
-        if self.is_empty() {
-            0
-        } else {
-            self[0].mNumberChannels as usize
-        }
-    }
-
-    pub fn frames(&self) -> usize {
-        let channels = self.channels();
-        if channels == 0 {
-            0
-        } else {
-            self[0].len() / channels
-        }
-    }
 }
 
-/// Overlay type over the actual sys::AudioBuffer type.
-///
-/// This helps us to implement Deref.
-#[repr(C)]
-#[derive(Copy, Clone)]
-#[allow(non_snake_case)]
-pub struct AudioBuffer<S: Sample> {
-    mNumberChannels: u32,
-    mDataByteSize: u32,
-    mData: *mut c_void,
-    _ph: PhantomData<S>, // zero sized
+impl<S: Sample> AudioBuffer<S> {
+    /// Number of channels.
+    pub fn channels(&self) -> usize {
+        self.channels as usize
+    }
+
+    /// Number of frames.
+    ///
+    /// Channels are assumed to be interleaved, which means 2 channels are
+    /// organized as [L,R,L,R,...]. The number of frames is therefore the
+    /// total length of the buffer [`AudioBuffer::len()`] divided by the channels.
+    pub fn frames(&self) -> usize {
+        self.len() / self.channels()
+    }
+
+    /// Samples as a slice.
+    pub fn samples(&self) -> &[S] {
+        &*self
+    }
+
+    /// Samples as a mutable slice.
+    pub fn samples_mut(&mut self) -> &mut [S] {
+        &mut *self
+    }
 }
 
 impl<S: Sample> Deref for AudioBufferList<S> {
@@ -178,14 +210,14 @@ impl<S: Sample> Deref for AudioBuffer<S> {
     fn deref(&self) -> &Self::Target {
         unsafe {
             let AudioBuffer {
-                mDataByteSize,
-                mData,
+                data_byte_size,
+                data,
                 ..
             } = self;
 
-            let len = *mDataByteSize as usize / mem::size_of::<S>();
+            let len = *data_byte_size as usize / mem::size_of::<S>();
 
-            std::slice::from_raw_parts(*mData as *mut S, len)
+            std::slice::from_raw_parts(*data as *mut S, len)
         }
     }
 }
@@ -194,14 +226,14 @@ impl<S: Sample> DerefMut for AudioBuffer<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe {
             let AudioBuffer {
-                mDataByteSize,
-                mData,
+                data_byte_size,
+                data,
                 ..
             } = self;
 
-            let len = *mDataByteSize as usize / mem::size_of::<S>();
+            let len = *data_byte_size as usize / mem::size_of::<S>();
 
-            std::slice::from_raw_parts_mut(*mData as *mut S, len)
+            std::slice::from_raw_parts_mut(*data as *mut S, len)
         }
     }
 }
@@ -232,16 +264,16 @@ mod test {
     fn owned_non_interleaved() {
         let b = AudioBufferList::<f32>::new(2, 1, 512);
         assert_eq!(b.len(), 2);
-        assert_eq!(b.channels(), 1);
-        assert_eq!(b.frames(), 512);
+        assert_eq!(b.buffers()[0].channels, 1);
+        assert_eq!(b.buffers()[1].frames(), 512);
     }
 
     #[test]
     fn owned_interleaved() {
         let b = AudioBufferList::<f32>::new(1, 2, 512);
         assert_eq!(b.len(), 1);
-        assert_eq!(b.channels(), 2);
-        assert_eq!(b.frames(), 512);
+        assert_eq!(b[0].channels(), 2);
+        assert_eq!(b[0].frames(), 512);
     }
 
     #[test]

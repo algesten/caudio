@@ -390,7 +390,7 @@ mod test {
 
         for _ in 0..300 {
             u.render(&time, &mut output).unwrap();
-            time.mSampleTime += output.frames() as f64;
+            time.mSampleTime += output[0].frames() as f64;
         }
     }
 }
