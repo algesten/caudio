@@ -145,14 +145,22 @@ impl<S: Sample> AudioBufferList<S> {
     ///
     /// Same as using the Deref trait.
     pub fn buffers(&self) -> &[AudioBuffer<S>] {
-        &*self
+        unsafe {
+            let len = (*self.list).mNumberBuffers as usize;
+            let ptr = &(*self.list).mBuffers as *const _ as *const AudioBuffer<S>;
+            std::slice::from_raw_parts(ptr, len)
+        }
     }
 
     /// Slice of mutable contained buffers.
     ///
     /// Same as using the DerefMut trait.
     pub fn buffers_mut(&mut self) -> &mut [AudioBuffer<S>] {
-        &mut *self
+        unsafe {
+            let len = (*self.list).mNumberBuffers as usize;
+            let ptr = &mut (*self.list).mBuffers as *mut _ as *mut AudioBuffer<S>;
+            std::slice::from_raw_parts_mut(ptr, len)
+        }
     }
 }
 
@@ -173,41 +181,6 @@ impl<S: Sample> AudioBuffer<S> {
 
     /// Samples as a slice.
     pub fn samples(&self) -> &[S] {
-        &*self
-    }
-
-    /// Samples as a mutable slice.
-    pub fn samples_mut(&mut self) -> &mut [S] {
-        &mut *self
-    }
-}
-
-impl<S: Sample> Deref for AudioBufferList<S> {
-    type Target = [AudioBuffer<S>];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe {
-            let len = (*self.list).mNumberBuffers as usize;
-            let ptr = &(*self.list).mBuffers as *const _ as *const AudioBuffer<S>;
-            std::slice::from_raw_parts(ptr, len)
-        }
-    }
-}
-
-impl<S: Sample> DerefMut for AudioBufferList<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            let len = (*self.list).mNumberBuffers as usize;
-            let ptr = &mut (*self.list).mBuffers as *mut _ as *mut AudioBuffer<S>;
-            std::slice::from_raw_parts_mut(ptr, len)
-        }
-    }
-}
-
-impl<S: Sample> Deref for AudioBuffer<S> {
-    type Target = [S];
-
-    fn deref(&self) -> &Self::Target {
         unsafe {
             let AudioBuffer {
                 data_byte_size,
@@ -220,10 +193,9 @@ impl<S: Sample> Deref for AudioBuffer<S> {
             std::slice::from_raw_parts(*data as *mut S, len)
         }
     }
-}
 
-impl<S: Sample> DerefMut for AudioBuffer<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    /// Samples as a mutable slice.
+    pub fn samples_mut(&mut self) -> &mut [S] {
         unsafe {
             let AudioBuffer {
                 data_byte_size,
@@ -235,6 +207,34 @@ impl<S: Sample> DerefMut for AudioBuffer<S> {
 
             std::slice::from_raw_parts_mut(*data as *mut S, len)
         }
+    }
+}
+
+impl<S: Sample> Deref for AudioBufferList<S> {
+    type Target = [AudioBuffer<S>];
+
+    fn deref(&self) -> &Self::Target {
+        self.buffers()
+    }
+}
+
+impl<S: Sample> DerefMut for AudioBufferList<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.buffers_mut()
+    }
+}
+
+impl<S: Sample> Deref for AudioBuffer<S> {
+    type Target = [S];
+
+    fn deref(&self) -> &Self::Target {
+        self.samples()
+    }
+}
+
+impl<S: Sample> DerefMut for AudioBuffer<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.samples_mut()
     }
 }
 
